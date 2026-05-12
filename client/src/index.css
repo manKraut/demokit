@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/* DemoKit base styles. Tailwind v4 picks up sources from index.html and
+   the React tree automatically. */
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+
+  /* Prefer the system mono stack for code-like content. */
+  pre, code, .font-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+  }
+
+  /* Scrollbars: dark theme aware. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(51 65 85 / 0.5);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: rgb(71 85 105 / 0.7); }
+}
