@@ -121,6 +121,12 @@ export function createOrchestrator({
   let cancelled = false;
   let pendingGate = null;
 
+  // Multi-turn debrief queue. The route layer (step 6) calls
+  // orchestrator.sendUserMessage(text) for each user turn; the debrief
+  // loop awaits nextUserMessage() between rounds.
+  const userMessageQueue = [];
+  let userMessageResolver = null;
+
   // ── Event emission ──
   async function emit(event) {
     const enriched = { timestamp: new Date().toISOString(), ...event };
@@ -176,12 +182,14 @@ export function createOrchestrator({
       if (allowStream && isAsyncIterable(callResult)) {
         let usage = null;
         let output = null;
+        let assistantText = '';
         for await (const event of callResult) {
           if (cancelled) {
             controller.abort();
             throw new Error('Pipeline cancelled');
           }
           if (event.type === 'text') {
+            assistantText += event.text;
             await emit({ type: 'token', agent: name, text: event.text });
           } else if (event.type === 'usage') {
             usage = event.usage;
@@ -203,7 +211,7 @@ export function createOrchestrator({
           usage,
           durationMs: Date.now() - startedAt,
         });
-        return { output, usage };
+        return { output, usage, assistantText };
       }
 
       const result = await callResult;
@@ -292,7 +300,33 @@ export function createOrchestrator({
       pendingGate = null;
       gate.reject(new Error('Cancelled'));
     }
+    if (userMessageResolver) {
+      const r = userMessageResolver;
+      userMessageResolver = null;
+      r(null);
+    }
     await emit({ type: 'cancelled' });
+  }
+
+  // ── Debrief multi-turn ──
+  function sendUserMessage(text) {
+    if (typeof text !== 'string' || text.length === 0) {
+      throw new TypeError('sendUserMessage: text must be a non-empty string');
+    }
+    if (userMessageResolver) {
+      const r = userMessageResolver;
+      userMessageResolver = null;
+      r(text);
+    } else {
+      userMessageQueue.push(text);
+    }
+  }
+
+  function nextUserMessage() {
+    if (userMessageQueue.length > 0) return Promise.resolve(userMessageQueue.shift());
+    return new Promise((resolve) => {
+      userMessageResolver = resolve;
+    });
   }
 
   // ── Step implementations ──
@@ -301,11 +335,38 @@ export function createOrchestrator({
   // per-item progress via setCurrentStep — they don't change top-level state.
 
   async function runDebrief() {
-    const { output } = await invokeAgent('debrief', { session: session.meta }, { allowStream: true });
-    if (!output) throw new Error('debrief agent did not emit final output');
-    await saveArtifact(session.id, 'spec', output);
-    if (output.projectName) {
-      session.meta = await saveMeta(session.id, { projectName: output.projectName });
+    // Multi-turn loop: stay in 'debriefing' state, consuming user messages
+    // until the agent yields a final structured spec via { type: 'output' }.
+    const conversation = [];
+    let finalOutput = null;
+
+    while (!finalOutput && !cancelled) {
+      const userMessage = await nextUserMessage();
+      if (cancelled || userMessage === null) return;
+
+      conversation.push({ role: 'user', content: userMessage });
+      await emit({ type: 'user-message', text: userMessage });
+
+      const turn = await invokeAgent(
+        'debrief',
+        { history: conversation, session: session.meta },
+        { allowStream: true }
+      );
+
+      if (turn.assistantText) {
+        conversation.push({ role: 'assistant', content: turn.assistantText });
+      }
+      if (turn.output) {
+        finalOutput = turn.output;
+      }
+    }
+
+    if (!finalOutput) {
+      throw new Error('debrief did not emit a final spec before cancellation');
+    }
+    await saveArtifact(session.id, 'spec', finalOutput);
+    if (finalOutput.projectName) {
+      session.meta = await saveMeta(session.id, { projectName: finalOutput.projectName });
     }
   }
 
@@ -562,6 +623,7 @@ export function createOrchestrator({
     approve,
     reject,
     cancel,
+    sendUserMessage,
     get session() {
       return session;
     },
