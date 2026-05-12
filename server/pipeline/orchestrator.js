@@ -118,6 +118,11 @@ export function createOrchestrator({
   if (!tokenTracker) throw new TypeError('tokenTracker is required');
 
   const emitter = new EventEmitter();
+  // Attach a default no-op 'error' listener so emit({type:'error'}) does
+  // not synchronously throw ERR_UNHANDLED_ERROR when no consumer (e.g. SSE
+  // bridge) is currently attached. The error is still persisted to trace
+  // and to meta.json by the catch in start().
+  emitter.on('error', () => {});
   let cancelled = false;
   let pendingGate = null;
 
@@ -362,7 +367,10 @@ export function createOrchestrator({
     }
 
     if (!finalOutput) {
-      throw new Error('debrief did not emit a final spec before cancellation');
+      // Cancellation is the normal way to exit early without a spec —
+      // surface that as a clean return, not a thrown error.
+      if (cancelled) return;
+      throw new Error('debrief did not emit a final spec');
     }
     await saveArtifact(session.id, 'spec', finalOutput);
     if (finalOutput.projectName) {
@@ -604,11 +612,19 @@ export function createOrchestrator({
           type: 'error',
           error: { message: err.message, stack: err.stack },
         });
-        throw err;
+        // Don't re-throw: failure has been persisted and broadcast. SSE
+        // consumers learn about it via the 'error' event; the route's
+        // start().catch() handler should not fire for expected failure
+        // paths. The while-loop exits below because status === 'failed'.
+        break;
       }
     }
-    if (TERMINAL_STATES.has(session.meta.status) || GATE_STATES.has(session.meta.status)) {
-      await emit({ type: 'pipeline-paused', status: session.meta.status });
+    // Emit a single terminal event so SSE consumers have a clean signal
+    // separate from per-transition state-changed events.
+    if (session.meta.status === 'done') {
+      await emit({ type: 'done', sessionId: session.id });
+    } else if (session.meta.status === 'failed') {
+      await emit({ type: 'failed', sessionId: session.id, error: session.meta.error });
     }
   }
 
