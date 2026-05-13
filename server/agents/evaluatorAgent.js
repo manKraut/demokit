@@ -64,11 +64,17 @@ EVERY check passes.
 7. stack-defaults-respected — contract.backendEnv.PORT and
    contract.backendEnv.DATABASE_URL EXACTLY match the stack-default values
    shown in your input.
+8. seed-data-when-tables-exist — if contract.db.tables is non-empty, the
+   backend DB init file MUST contain an INSERT (stack-b: better-sqlite3) or
+   session.add / INSERT INTO (stack-a: SQLAlchemy) for EACH declared table,
+   guarded by a COUNT(*) == 0 check so it's idempotent. A missing seed
+   block means the demo renders empty on first boot — emit a
+   \`missing-seed\` violation for each unseeded table and fail this check.
 
 VIOLATION TYPES (use these strings exactly; use "other" for anything else):
   missing-endpoint | unknown-endpoint | unknown-import |
   out-of-scope-violation | env-var-mismatch | env-default-missing |
-  stack-defaults-mismatch | type-mismatch | table-mismatch | other
+  stack-defaults-mismatch | missing-seed | type-mismatch | table-mismatch | other
 
 OUTPUT
 - Respond with ONLY a JSON object. First char '{', last char '}'.
@@ -101,6 +107,7 @@ const REQUIRED_CHECKS = Object.freeze([
   'imports-resolve',
   'tables-in-contract',
   'stack-defaults-respected',
+  'seed-data-when-tables-exist',
 ]);
 
 export async function evaluatorAgent({ input, signal, providerKeys, modelConfig }) {

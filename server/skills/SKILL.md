@@ -55,6 +55,7 @@ You are the architect agent. Given a debriefed and scoped spec for project **{{p
 - Backend is whatever **{{stack}}** specifies (see stack notes below).
 - Database is always SQLite.
 - Out-of-scope concerns MUST be implemented via the mock library (see `[OUT_OF_SCOPE]`). Do NOT add backend endpoints for them.
+- **Demo data:** if `contract.db.tables` is non-empty, EVERY table will be auto-seeded with 3–5 placeholder rows by the backend on first boot (see `[CODE]` → Demo data seeding). You do NOT need to add a separate `seed.js`/`seed.py` file to `fileTree` — the seed lives inside the same DB init file that creates the tables. The empty UI bug is what this rule exists to prevent.
 
 ### `fileTree` format
 
@@ -126,6 +127,8 @@ Rules:
 - `backendEnv` MUST use the stack-default values for `PORT` and `DATABASE_URL` shown in the stack notes below. `DATABASE_URL` differs by stack: stack-a uses a SQLAlchemy URL like `sqlite:///./dev.db`, stack-b uses a plain file path like `./dev.db`. Mixing them silently breaks the backend.
 - `db.engine` is always `"sqlite"` in v1.
 - The contract is the single source of truth — coders may not invent endpoints, types, env vars, or tables outside it.
+- **Asset / file URL fields:** if any `types[*]` declares a field that holds a URL pointing to a static file — images (`imageUrl`, `avatarUrl`, `photoUrl`, `coverImage`), documents (`pdfUrl`, `attachmentUrl`, `documentUrl`, `fileUrl`), media (`audioUrl`, `videoUrl`), archives (`zipUrl`), or downloadable data (`csvUrl`, `xlsxUrl`) — the coder will seed those columns with stable paths under `/sample-assets/<table>-<n>.<ext>`, where `<ext>` matches the field semantics (`.jpg` for images, `.pdf` for documents, `.csv` for data, `.mp4` for video, etc.). The scaffold creates an empty `client/public/sample-assets/` folder for the human running the demo to drop their own files into. You do NOT need to put `sample-assets/` in `fileTree`; the scaffold handles it.
+- **Real seed data (optional):** the scaffold also creates an empty `server/seed-data/` folder. If the human drops a CSV named `<table>.csv` into it (matching the column order of a declared table), the coder's seed block will parse and import those rows on first boot instead of using lorem-ipsum placeholders. This lets a Product Engineer demo with REAL data without editing code. You do NOT need to put `seed-data/` in `fileTree` either — the scaffold and the coder's seed rule together handle it. If the user has explicitly signalled they will provide their own data, mention this in `notes` so downstream agents know to prioritise the CSV-fallback pattern.
 
 ### Stack-specific notes
 
@@ -169,6 +172,91 @@ You receive the architecture, the interface contract, and signatures of previous
   - Python example: \`port = int(os.getenv("PORT", "<stack-default-port>"))\`
 - The concrete default values for **{{stack}}** are listed in the "Stack-specific notes" section below. Use them verbatim.
 - Backend code must enable CORS only if the stack notes say so (the Vite dev proxy already keeps the frontend single-origin in dev).
+
+### Demo data seeding (DB init files only)
+
+A DemoKit project is a CLIENT DEMO. An empty grid on first boot looks broken, even if the code is correct. So every DB init file (e.g. `server/db.js` for stack-b, `server/database.py` for stack-a) MUST seed each declared table with placeholder rows on first run.
+
+Rules:
+
+- **Right after every `CREATE TABLE IF NOT EXISTS <name>`, check `SELECT COUNT(*) FROM <name>` and seed if and only if the count is 0.** The seed has TWO sources, tried in order:
+  1. **Real data import (preferred):** if `server/seed-data/<name>.csv` exists, parse it and INSERT each row. The scaffold creates the empty `server/seed-data/` folder so the human running the demo can drop their own CSVs in. Stack-b uses the `csv-parse` package (bundled in the scaffold's deps); stack-a uses Python's stdlib `csv` module. The CSV's column order MUST match the table's column order (skipping `id` if it's autoincrement); a single header row is assumed and skipped.
+  2. **Placeholder fallback:** if no CSV exists for this table, INSERT 3–5 lorem-ipsum-style placeholder rows so the UI never renders empty on first boot.
+  Both paths are idempotent — a real user adding rows in-app will never cause re-seeding, and a fresh clone always boots into a populated UI.
+- Placeholder text: names like `"Project Alpha"`, `"Project Beta"`, `"Sample item N"` — strings that obviously read as placeholder data so the demo viewer knows to replace them.
+- **Asset / file URL columns** (`imageUrl`, `avatarUrl`, `photoUrl`, `pdfUrl`, `attachmentUrl`, `documentUrl`, `fileUrl`, `audioUrl`, `videoUrl`, `csvUrl`, etc.): seed with `'/sample-assets/<table>-1.<ext>'`, `'/sample-assets/<table>-2.<ext>'`, …. Pick `<ext>` from the field semantics — `.jpg` for images, `.pdf` for documents, `.csv`/`.xlsx` for downloadable data, `.mp4` for video, `.mp3` for audio. The scaffold creates an empty `client/public/sample-assets/` folder with a README for the end user to drop real files into. Until they do, the browser shows broken-image icons / broken-link icons — that's the intended signal.
+- Required-NOT-NULL columns: every column declared `NOT NULL` in the contract MUST get a value in the placeholder rows. Pay attention to `category`, `status`, `createdAt`, etc.
+- Numeric / boolean columns: use sensible defaults (`0`, `1`, `true`, current ISO timestamp for `createdAt`).
+- Keep the seed block compact and inline in the DB init file. Do NOT factor it out into a separate file.
+
+Stack-b example (better-sqlite3, with CSV fallback):
+
+\`\`\`js
+import fs from 'node:fs';
+import path from 'node:path';
+import { parse } from 'csv-parse/sync';
+
+db.exec(\`
+  CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    imageUrl TEXT NOT NULL
+  );
+\`);
+
+const { count } = db.prepare('SELECT COUNT(*) AS count FROM projects').get();
+if (count === 0) {
+  const insert = db.prepare(
+    'INSERT INTO projects (name, description, imageUrl) VALUES (?, ?, ?)'
+  );
+  const csvPath = path.join(import.meta.dirname, 'seed-data', 'projects.csv');
+  if (fs.existsSync(csvPath)) {
+    const rows = parse(fs.readFileSync(csvPath, 'utf8'), { columns: true, skip_empty_lines: true });
+    for (const row of rows) {
+      insert.run(row.name, row.description, row.imageUrl);
+    }
+  } else {
+    for (let i = 1; i <= 4; i++) {
+      insert.run(
+        \`Project \${'Alpha Beta Gamma Delta'.split(' ')[i - 1]}\`,
+        'Lorem ipsum dolor sit amet, consectetur adipiscing elit.',
+        \`/sample-assets/projects-\${i}.jpg\`
+      );
+    }
+  }
+}
+\`\`\`
+
+Stack-a example (SQLAlchemy, with CSV fallback):
+
+\`\`\`py
+import csv
+from pathlib import Path
+
+Base.metadata.create_all(engine)
+with Session(engine) as session:
+    if session.query(Project).count() == 0:
+        csv_path = Path(__file__).parent / "seed-data" / "projects.csv"
+        if csv_path.exists():
+            with csv_path.open(newline="") as f:
+                for row in csv.DictReader(f):
+                    session.add(Project(
+                        name=row["name"],
+                        description=row["description"],
+                        imageUrl=row["imageUrl"],
+                    ))
+        else:
+            for i, name in enumerate(["Alpha", "Beta", "Gamma", "Delta"], start=1):
+                session.add(Project(
+                    name=f"Project {name}",
+                    description="Lorem ipsum dolor sit amet.",
+                    imageUrl=f"/sample-assets/projects-{i}.jpg",
+                ))
+        session.commit()
+\`\`\`
+
+The evaluator runs a `seed-data-when-tables-exist` check that fails if `contract.db.tables` is non-empty but no backend file contains an `INSERT` (stack-b) / `session.add` (stack-a). Either source (CSV or placeholder) satisfies the check — the placeholder fallback is required so the demo is never empty even when the user hasn't dropped any CSVs.
 
 ### Stack-specific notes for {{stack}}
 
@@ -252,7 +340,8 @@ Respond with a single JSON object, no prose. The object MUST include a `checks` 
     "out-of-scope-via-mocks-only":        { "passed": true,  "detail": "No stubbed concern used outside src/mocks/." },
     "imports-resolve":                    { "passed": false, "detail": "client/src/lib/api.js imports '../mocks/notes' which is NOT in architecture.fileTree, not a known package, and not a stdlib module." },
     "tables-in-contract":                 { "passed": true,  "detail": "Only the 'notes' table is referenced; it is declared in contract.db.tables." },
-    "stack-defaults-respected":           { "passed": false, "detail": "contract.backendEnv.PORT is 3000 but stack-b default is 3001." }
+    "stack-defaults-respected":           { "passed": false, "detail": "contract.backendEnv.PORT is 3000 but stack-b default is 3001." },
+    "seed-data-when-tables-exist":        { "passed": false, "detail": "contract.db.tables has 'notes' but no INSERT statement appears in any backend file body — the demo would render empty on first boot." }
   },
   "violations": [
     {
@@ -283,6 +372,7 @@ Allowed `type` values:
 - `env-var-mismatch` — code reads an env var not declared in `frontendEnv`/`backendEnv` (or vice versa).
 - `env-default-missing` — backend code reads `process.env.X` / `os.getenv("X")` without a `||` / second-arg fallback.
 - `stack-defaults-mismatch` — `contract.backendEnv.PORT`/`DATABASE_URL` don't match the stack default values shown in your input.
+- `missing-seed` — `contract.db.tables` is non-empty but no backend file contains an `INSERT` (stack-b) / `session.add` (stack-a) for one or more declared tables.
 - `type-mismatch` — request/response shape diverges from `contract.types`.
 - `table-mismatch` — SQL references a table or column not in `contract.db.tables`.
 - `other` — anything else; use `detail` to explain.
@@ -298,6 +388,7 @@ Allowed `type` values:
 5. `imports-resolve` — Every import path in every signature resolves to (a) a file present in `architecture.fileTree`, (b) a package known to the chosen stack, or (c) a language stdlib module. You MUST use the architecture you were given as the source of truth for (a); be strict.
 6. `tables-in-contract` — Every SQL table referenced by queries appears in `contract.db.tables`.
 7. `stack-defaults-respected` — `contract.backendEnv.PORT` and `contract.backendEnv.DATABASE_URL` match the stack-default values you were given. Mismatch is a hard fail.
+8. `seed-data-when-tables-exist` — if `contract.db.tables` is non-empty, the backend DB init file MUST contain an `INSERT` (stack-b) or `session.add` / `INSERT INTO` (stack-a) for EACH declared table, guarded by a `COUNT(*) == 0` check (idempotent seed). If any declared table has no seed block, emit a `missing-seed` violation and fail this check. The empty-grid bug is what this rule prevents — a demo with empty tables looks broken on first boot.
 
 ### Retry policy
 
@@ -324,7 +415,11 @@ Sections (in this order):
 5. **Install** — {{stackInstallSteps}}
 6. **Run** — {{stackRunSteps}}
 7. **Environment variables** — list every entry in `contract.frontendEnv` and `contract.backendEnv`, with one-line descriptions tailored to the stack (e.g. for stack-b, describe `DATABASE_URL` as the path passed to better-sqlite3; for stack-a, as the SQLAlchemy connection string).
-8. **What's stubbed** — short paragraph linking to `DISCLAIMER.md` and naming the mocks actually used in this project.
+8. **Sample data & assets** — mention that the backend auto-seeds each declared table on first boot. Describe both drop-in folders:
+   - `client/public/sample-assets/` — empty folder for static files (images, PDFs, CSVs, audio, video). Seeded URL columns point at `/sample-assets/<table>-<n>.<ext>`; drop files matching those names to see them render.
+   - `server/seed-data/` — empty folder for real row imports. Drop `<table>.csv` here and the backend will import those rows on first boot instead of lorem-ipsum placeholders.
+   Point readers at the README inside each folder for details. Only include this whole section if `contract.db.tables` is non-empty.
+9. **What's stubbed** — short paragraph linking to `DISCLAIMER.md` and naming the mocks actually used in this project.
 
 ### `DISCLAIMER.md`
 
