@@ -36,6 +36,8 @@ import {
   writeOutputFile,
 } from '../sessions/sessionStore.js';
 import { extractSignatures } from '../utils/signatureExtractor.js';
+import { scaffoldProject } from './scaffold.js';
+import { getStack } from '../agents/stacks.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -451,7 +453,24 @@ export function createOrchestrator({
       const body = await readOutputFile(session.id, f.path);
       if (body !== null) bodies[f.path] = body;
     }
-    const { output } = await invokeAgent('evaluator', { spec, contract, signatures, bodies });
+    // Surface the stack-default env values so the evaluator can verify
+    // contract.backendEnv against the canonical PORT/DATABASE_URL for the
+    // chosen stack — that's the stack-defaults-respected check.
+    let stackDefaults = null;
+    try {
+      stackDefaults = getStack(session.meta.stack).defaultBackendEnv;
+    } catch {
+      stackDefaults = null;
+    }
+    const { output } = await invokeAgent('evaluator', {
+      spec,
+      contract,
+      signatures,
+      architecture,
+      bodies,
+      stack: session.meta.stack,
+      stackDefaults,
+    });
     if (!output || typeof output.passed !== 'boolean') {
       throw new Error('evaluator must return { passed: boolean, violations, retryHints? }');
     }
@@ -522,6 +541,19 @@ export function createOrchestrator({
     for (const [relPath, content] of Object.entries(output.files)) {
       await writeOutputFile(session.id, relPath, content);
     }
+
+    // Deterministic scaffolding runs AFTER the LLM packager so it
+    // always overrides whatever the LLM may have written for the
+    // wrapper files (vite.config.js, package.json, etc.). The LLM
+    // keeps responsibility for prose-heavy files like README.md and
+    // DISCLAIMER.md.
+    const scaffolded = await scaffoldProject({
+      sessionId: session.id,
+      projectName: session.meta.projectName,
+      stack: session.meta.stack,
+      contract,
+    });
+    await emit({ type: 'scaffold-written', files: scaffolded });
   }
 
   // ── State-machine driver ──

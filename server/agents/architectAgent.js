@@ -30,7 +30,8 @@ of your skill exactly.
 
 Hard constraints (the evaluator will enforce them):
 - fileTree length must not exceed the file ceiling (see [STRUCTURE]).
-- Maximum 3 routes/pages in the frontend.
+- Maximum 3 routes/pages in the frontend; stay close to the spec's
+  declared pages and do NOT invent extra ones.
 - Database is SQLite.
 - Out-of-scope concerns (see [OUT_OF_SCOPE]) MUST be implemented via the
   mock library; do NOT add backend endpoints for them. Do include the
@@ -40,6 +41,14 @@ Hard constraints (the evaluator will enforce them):
 - Every endpoint referenced by frontend code must appear in
   contract.endpoints. Every type used in request/response must appear
   in contract.types.
+- contract.backendEnv MUST use the stack-default PORT and DATABASE_URL
+  (see the stack notes) unless the spec explicitly demands otherwise.
+  Stack-a uses a SQLAlchemy URL ("sqlite:///./dev.db"); stack-b uses a
+  bare path ("./dev.db"). DO NOT mix them.
+- NEVER put any of these files in fileTree (they are generated
+  deterministically by the scaffold step): package.json (root, client/,
+  server/), client/index.html, client/vite.config.js, .env.example,
+  .gitignore, README.md, DISCLAIMER.md, server/requirements.txt.
 
 OUTPUT
 - Respond with ONLY the JSON object. No prose, no markdown code fences
@@ -68,6 +77,22 @@ export async function architectAgent({ input, signal, providerKeys, modelConfig 
     '```',
     '',
     `## Chosen stack: ${stack.id} — ${stack.label}`,
+    '',
+    '## REQUIRED contract.backendEnv values (use these EXACTLY)',
+    '',
+    '```json',
+    JSON.stringify(stack.defaultBackendEnv, null, 2),
+    '```',
+    '',
+    'These are not suggestions. The evaluator runs a `stack-defaults-respected` check; mismatch is a hard fail and triggers a re-architecture.',
+    '',
+    '## Default contract.frontendEnv for this stack',
+    '',
+    '```json',
+    JSON.stringify(stack.defaultFrontendEnv, null, 2),
+    '```',
+    '',
+    'You MAY override contract.frontendEnv to `{}` (the Vite dev proxy makes VITE_API_URL unnecessary in v1), but if you keep it, use these values verbatim.',
     '',
     'Emit the JSON object now.',
   ].join('\n');
