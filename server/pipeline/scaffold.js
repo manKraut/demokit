@@ -162,8 +162,11 @@ function rootPackageJsonStackB(projectName) {
         private: true,
         version: '0.0.1',
         scripts: {
+          // Root install is required to bring in `concurrently` (declared
+          // as a root devDependency). Without it `npm run dev` fails with
+          // `concurrently: command not found` even after `install:all`.
           'install:all':
-            'npm --prefix client install && npm --prefix server install',
+            'npm install && npm --prefix client install && npm --prefix server install',
           dev: 'concurrently -k -n server,client -c cyan,magenta "npm:dev:server" "npm:dev:client"',
           'dev:client': 'npm --prefix client run dev',
           'dev:server': 'npm --prefix server run dev',
