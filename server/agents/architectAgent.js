@@ -47,8 +47,13 @@ Hard constraints (the evaluator will enforce them):
   bare path ("./dev.db"). DO NOT mix them.
 - NEVER put any of these files in fileTree (they are generated
   deterministically by the scaffold step): package.json (root, client/,
-  server/), client/index.html, client/vite.config.js, .env.example,
+  server/), client/index.html, client/vite.config.js,
+  client/src/main.jsx, client/src/ErrorBoundary.jsx, .env.example,
   .gitignore, README.md, DISCLAIMER.md, server/requirements.txt.
+- main.jsx is scaffolded so the BrowserRouter root lives in exactly
+  one place. App.jsx (which IS in fileTree, written by the coder) must
+  therefore contain only <Routes>/<Route> children — never wrap a
+  router. Reflect this in App.jsx's "purpose" string.
 
 OUTPUT
 - Respond with ONLY the JSON object. No prose, no markdown code fences

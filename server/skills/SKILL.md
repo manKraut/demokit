@@ -74,6 +74,8 @@ Rules:
   - `package.json` (root, `client/`, and `server/`)
   - `client/index.html`
   - `client/vite.config.js`
+  - `client/src/main.jsx` (React bootstrap — the scaffold wraps `<App />` in `<BrowserRouter>` + `<ErrorBoundary>` here)
+  - `client/src/ErrorBoundary.jsx`
   - `server/requirements.txt`
   - `.env.example`, `.gitignore`
   - `README.md`, `DISCLAIMER.md`
@@ -157,12 +159,12 @@ You receive the architecture, the interface contract, and signatures of previous
 
 - Functional components only. Hooks for state.
 - Tailwind v4 utility classes for styling. The only CSS file is `src/index.css` with the single directive `@import "tailwindcss";`. Do NOT use the v3 `@tailwind base/components/utilities` directives.
-- Routing via `react-router-dom` v6 with `<BrowserRouter>`. Maximum **{{maxPages}}** routes total.
+- Routing via `react-router-dom` v6. **The `<BrowserRouter>` root is provided by the scaffolded `client/src/main.jsx` — `App.jsx` MUST contain ONLY `<Routes>` and `<Route>` children, with NO `<BrowserRouter>` / `<HashRouter>` / `<MemoryRouter>` / `<Router>` wrapper.** Importing `BrowserRouter` (or aliasing it as `Router`) anywhere outside `main.jsx` is forbidden — React Router throws `You cannot render a <Router> inside another <Router>` and the whole tree fails to mount (blank screen). The evaluator's `frontend-renders-once` check enforces this. Maximum **{{maxPages}}** routes total.
 - HTTP via the native `fetch` API. No axios.
 - **Endpoint URLs MUST be string literals starting with `/api/`**, e.g. `fetch('/api/notes')`. Do NOT prefix with `VITE_API_URL`, `import.meta.env.X`, template literals, or absolute URLs. The Vite dev server proxies `/api` to the backend automatically (configured by the scaffold); going through that proxy keeps the frontend single-origin and lets the signature extractor see every endpoint call. Dynamic URLs (`fetch(\`${base}/api/x\`)`) break the extractor and the evaluator will flag it.
 - Env reads as literal property access: `import.meta.env.X`, never `import.meta.env[name]`. In v1 the frontend rarely needs an env var at runtime — prefer no env var over a stub.
 - For out-of-scope concerns, import from `src/mocks/<name>.js` — never call `fetch` to a stubbed concern.
-- Do NOT generate `index.html`, `vite.config.js`, `client/package.json`, or any Tailwind/PostCSS config — those are scaffolded automatically.
+- Do NOT generate `index.html`, `vite.config.js`, `client/package.json`, `client/src/main.jsx`, `client/src/ErrorBoundary.jsx`, or any Tailwind/PostCSS config — those are scaffolded automatically and silently overwritten if you emit them. `main.jsx` already imports and mounts `<App />` inside `<ErrorBoundary>` and `<BrowserRouter>`; assume both contexts exist for every component you write.
 
 ### Backend rules (always)
 
@@ -341,7 +343,8 @@ Respond with a single JSON object, no prose. The object MUST include a `checks` 
     "imports-resolve":                    { "passed": false, "detail": "client/src/lib/api.js imports '../mocks/notes' which is NOT in architecture.fileTree, not a known package, and not a stdlib module." },
     "tables-in-contract":                 { "passed": true,  "detail": "Only the 'notes' table is referenced; it is declared in contract.db.tables." },
     "stack-defaults-respected":           { "passed": false, "detail": "contract.backendEnv.PORT is 3000 but stack-b default is 3001." },
-    "seed-data-when-tables-exist":        { "passed": false, "detail": "contract.db.tables has 'notes' but no INSERT statement appears in any backend file body — the demo would render empty on first boot." }
+    "seed-data-when-tables-exist":        { "passed": false, "detail": "contract.db.tables has 'notes' but no INSERT statement appears in any backend file body — the demo would render empty on first boot." },
+    "frontend-renders-once":              { "passed": false, "detail": "client/src/App.jsx imports `BrowserRouter as Router` from react-router-dom and renders <Router>. The scaffolded main.jsx already provides <BrowserRouter>; rendering a second Router causes react-router-dom to throw and the page goes blank." }
   },
   "violations": [
     {
@@ -373,6 +376,7 @@ Allowed `type` values:
 - `env-default-missing` — backend code reads `process.env.X` / `os.getenv("X")` without a `||` / second-arg fallback.
 - `stack-defaults-mismatch` — `contract.backendEnv.PORT`/`DATABASE_URL` don't match the stack default values shown in your input.
 - `missing-seed` — `contract.db.tables` is non-empty but no backend file contains an `INSERT` (stack-b) / `session.add` (stack-a) for one or more declared tables.
+- `multiple-routers` — a client `.jsx` file outside `client/src/main.jsx` either imports `BrowserRouter`/`HashRouter`/`MemoryRouter` (including aliased forms like `BrowserRouter as Router`) from `react-router-dom`, OR renders any of those as a JSX element. Only the scaffolded `main.jsx` may render a router; anything else triggers the runtime "you cannot render a `<Router>` inside another `<Router>`" error and a blank page.
 - `type-mismatch` — request/response shape diverges from `contract.types`.
 - `table-mismatch` — SQL references a table or column not in `contract.db.tables`.
 - `other` — anything else; use `detail` to explain.
@@ -389,6 +393,10 @@ Allowed `type` values:
 6. `tables-in-contract` — Every SQL table referenced by queries appears in `contract.db.tables`.
 7. `stack-defaults-respected` — `contract.backendEnv.PORT` and `contract.backendEnv.DATABASE_URL` match the stack-default values you were given. Mismatch is a hard fail.
 8. `seed-data-when-tables-exist` — if `contract.db.tables` is non-empty, the backend DB init file MUST contain an `INSERT` (stack-b) or `session.add` / `INSERT INTO` (stack-a) for EACH declared table, guarded by a `COUNT(*) == 0` check (idempotent seed). If any declared table has no seed block, emit a `missing-seed` violation and fail this check. The empty-grid bug is what this rule prevents — a demo with empty tables looks broken on first boot.
+9. `frontend-renders-once` — Scan EVERY client `.jsx` body you were given. The scaffolded `client/src/main.jsx` (NOT in your bodies — it's deterministic) already wraps `<App />` in `<BrowserRouter>`, so ANY additional Router in the project bodies is a runtime crash. Fail this check if any body matches EITHER pattern:
+   - **Import**: `import { ... BrowserRouter ... } from 'react-router-dom'` (or `HashRouter`/`MemoryRouter`, including aliased forms like `BrowserRouter as Router`).
+   - **JSX render**: `<BrowserRouter`, `<HashRouter`, `<MemoryRouter`, or `<Router` (as an opening JSX tag — followed by space, `>`, or newline) appears in the body.
+   For each offending file, emit a `multiple-routers` violation and a precise retry hint: "Remove the `<BrowserRouter>` / `<Router>` wrapper from `<file>`. The router is provided by the scaffolded `client/src/main.jsx`; emit only `<Routes>` and `<Route>` children." This catches the most common blank-screen bug in DemoKit history.
 
 ### Retry policy
 

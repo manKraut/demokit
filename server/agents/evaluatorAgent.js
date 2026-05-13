@@ -70,11 +70,28 @@ EVERY check passes.
    guarded by a COUNT(*) == 0 check so it's idempotent. A missing seed
    block means the demo renders empty on first boot — emit a
    \`missing-seed\` violation for each unseeded table and fail this check.
+9. frontend-renders-once — Inspect EVERY client \`.jsx\` body. The
+   scaffolded \`client/src/main.jsx\` (NOT given to you; it's deterministic)
+   already wraps \`<App />\` in \`<BrowserRouter>\`, so any second router in
+   project code crashes react-router-dom at runtime ("you cannot render a
+   <Router> inside another <Router>") and the page goes blank. For each
+   client .jsx body, fail this check if EITHER pattern appears:
+   • Import: an \`import { ... }\` from \`'react-router-dom'\` that pulls in
+     \`BrowserRouter\`, \`HashRouter\`, or \`MemoryRouter\` (including aliased
+     forms like \`BrowserRouter as Router\`).
+   • JSX render: an opening JSX tag matching \`<BrowserRouter\`,
+     \`<HashRouter\`, \`<MemoryRouter\`, or \`<Router\` (followed by whitespace,
+     \`>\`, \`/>\`, or newline).
+   For each offending file, emit a \`multiple-routers\` violation and a
+   retry hint of the form: "Remove the <BrowserRouter>/<Router> wrapper
+   from <file>. The router is provided by the scaffolded
+   client/src/main.jsx; emit only <Routes> and <Route> children."
 
 VIOLATION TYPES (use these strings exactly; use "other" for anything else):
   missing-endpoint | unknown-endpoint | unknown-import |
   out-of-scope-violation | env-var-mismatch | env-default-missing |
-  stack-defaults-mismatch | missing-seed | type-mismatch | table-mismatch | other
+  stack-defaults-mismatch | missing-seed | multiple-routers |
+  type-mismatch | table-mismatch | other
 
 OUTPUT
 - Respond with ONLY a JSON object. First char '{', last char '}'.
@@ -108,6 +125,7 @@ const REQUIRED_CHECKS = Object.freeze([
   'tables-in-contract',
   'stack-defaults-respected',
   'seed-data-when-tables-exist',
+  'frontend-renders-once',
 ]);
 
 export async function evaluatorAgent({ input, signal, providerKeys, modelConfig }) {
