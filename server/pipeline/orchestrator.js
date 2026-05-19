@@ -57,7 +57,7 @@ export const AGENT_SECTIONS = Object.freeze({
 });
 
 /** State machine — terminal states stop the loop. */
-const TERMINAL_STATES = new Set(['done', 'failed']);
+const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
 
 /** States that pause the loop until external resume. */
 const GATE_STATES = new Set([
@@ -311,6 +311,14 @@ export function createOrchestrator({
       const r = userMessageResolver;
       userMessageResolver = null;
       r(null);
+    }
+    // Persist terminal status before emitting so any subsequent disk read
+    // (session list, page reload) sees a clean terminal state rather than
+    // whatever mid-pipeline status was last written.
+    try {
+      session.meta = await saveMeta(session.id, { status: 'cancelled' });
+    } catch {
+      // persist failure must not suppress the cancellation event
     }
     await emit({ type: 'cancelled' });
   }
