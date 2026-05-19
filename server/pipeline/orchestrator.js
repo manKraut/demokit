@@ -26,6 +26,7 @@
 // until then, callers register stub agents matching this contract.
 
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
 
 import {
   appendTrace,
@@ -34,10 +35,13 @@ import {
   saveArtifact,
   saveMeta,
   writeOutputFile,
+  getSessionDir,
 } from '../sessions/sessionStore.js';
 import { extractSignatures } from '../utils/signatureExtractor.js';
 import { scaffoldProject } from './scaffold.js';
 import { getStack } from '../agents/stacks.js';
+import { runStaticChecks } from '../utils/staticChecker.js';
+import { runRuntimeCheck, buildRuntimeCommands } from '../utils/runtimeChecker.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -64,6 +68,7 @@ const GATE_STATES = new Set([
   'awaiting-scope-approval',
   'awaiting-architecture-approval',
   'awaiting-clarification',
+  'awaiting-runtime-permission',
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,6 +132,10 @@ export function createOrchestrator({
   emitter.on('error', () => {});
   let cancelled = false;
   let pendingGate = null;
+  // Set to true when the user declines the runtime-permission gate so we
+  // skip runtime checks for the remainder of this orchestrator's lifetime
+  // without re-asking on every retry.
+  let runtimeSkipped = session.meta.runtimePermissionGranted === false;
 
   // Multi-turn debrief queue. The route layer (step 6) calls
   // orchestrator.sendUserMessage(text) for each user turn; the debrief
@@ -449,7 +458,10 @@ export function createOrchestrator({
     }
   }
 
-  async function runEvaluator() {
+  /**
+   * Load all evaluation inputs from disk.
+   */
+  async function loadEvalInputs() {
     const [spec, contract, signatures, architecture] = await Promise.all([
       loadArtifact(session.id, 'spec'),
       loadArtifact(session.id, 'contract'),
@@ -461,29 +473,77 @@ export function createOrchestrator({
       const body = await readOutputFile(session.id, f.path);
       if (body !== null) bodies[f.path] = body;
     }
-    // Surface the stack-default env values so the evaluator can verify
-    // contract.backendEnv against the canonical PORT/DATABASE_URL for the
-    // chosen stack — that's the stack-defaults-respected check.
     let stackDefaults = null;
-    try {
-      stackDefaults = getStack(session.meta.stack).defaultBackendEnv;
-    } catch {
-      stackDefaults = null;
-    }
-    const { output } = await invokeAgent('evaluator', {
-      spec,
-      contract,
-      signatures,
-      architecture,
-      bodies,
+    try { stackDefaults = getStack(session.meta.stack).defaultBackendEnv; } catch {}
+    return { spec, contract, signatures, architecture, bodies, stackDefaults };
+  }
+
+  /**
+   * Run the full evaluation cycle: static checks first, then runtime
+   * (if static passes and the user has granted permission).
+   *
+   * Returns the same { passed, checks, violations, retryHints } shape
+   * as the old LLM evaluator so runEvaluatorWithRetries is unchanged.
+   */
+  async function runEvaluator() {
+    const { spec, contract, signatures, architecture, bodies, stackDefaults } =
+      await loadEvalInputs();
+
+    // ── Phase 1: deterministic static checks ─────────────────────────────
+    const staticResult = runStaticChecks({
+      spec, contract, signatures, architecture, bodies,
       stack: session.meta.stack,
       stackDefaults,
     });
-    if (!output || typeof output.passed !== 'boolean') {
-      throw new Error('evaluator must return { passed: boolean, violations, retryHints? }');
+    await emit({ type: 'evaluator-result', ...staticResult, phase: 'static' });
+    if (!staticResult.passed) return staticResult;
+
+    // ── Phase 2: runtime checks ───────────────────────────────────────────
+    if (runtimeSkipped) {
+      // User previously declined — return the static result as the final verdict.
+      return staticResult;
     }
-    await emit({ type: 'evaluator-result', ...output });
-    return output;
+
+    if (!session.meta.runtimePermissionGranted) {
+      const outputDir = path.join(getSessionDir(session.id), 'output');
+      const commands = buildRuntimeCommands(session.meta.stack, outputDir);
+      await setState('awaiting-runtime-permission');
+      try {
+        await gateAt('runtime-permission', { commands, outputDir });
+        session.meta = await saveMeta(session.id, { runtimePermissionGranted: true });
+      } catch (err) {
+        // User rejected — skip runtime for the rest of this orchestrator's
+        // lifetime and treat static-pass as the final verdict.
+        runtimeSkipped = true;
+        session.meta = await saveMeta(session.id, { runtimePermissionGranted: false });
+        await emit({ type: 'runtime-check-skipped', reason: 'user declined' });
+        await setState('evaluating');
+        return staticResult;
+      }
+      // Gate approved — return to evaluating state before continuing.
+      await setState('evaluating');
+    }
+
+    const runtimeResult = await runRuntimeCheck({
+      sessionId: session.id,
+      contract,
+      stack: session.meta.stack,
+    });
+    await emit({ type: 'evaluator-result', ...runtimeResult, phase: 'runtime' });
+
+    // Merge static + runtime results into one verdict.
+    return {
+      passed: runtimeResult.passed,
+      checks: { ...staticResult.checks, ...runtimeResult.checks },
+      violations: [
+        ...(staticResult.violations || []),
+        ...(runtimeResult.violations || []),
+      ],
+      retryHints: {
+        ...(staticResult.retryHints || {}),
+        ...(runtimeResult.retryHints || {}),
+      },
+    };
   }
 
   async function runEvaluatorWithRetries() {
@@ -493,6 +553,9 @@ export function createOrchestrator({
       const retryable = {};
       const exhausted = [];
       for (const [filePath, hint] of Object.entries(hints)) {
+        // Skip synthetic keys like '(contract)' or '(runtime)' — they don't
+        // correspond to files the coder can regenerate.
+        if (filePath.startsWith('(')) continue;
         const used = session.meta.retries?.[filePath] || 0;
         if (used < MAX_RETRIES_PER_FILE) retryable[filePath] = hint;
         else exhausted.push(filePath);
@@ -505,7 +568,7 @@ export function createOrchestrator({
           exhausted.length > 0 ? `exhausted: ${exhausted.join(', ')}` : 'no retryable hints'
         );
         const clarification = await gateAt('evaluator-clarification', { report: result });
-        const newHints = clarification.retryHints || {};
+        const newHints = clarification?.retryHints || {};
 
         // Reset retry counters for files the user explicitly clarified.
         const newRetries = { ...(session.meta.retries || {}) };
@@ -620,6 +683,13 @@ export function createOrchestrator({
         // If we land here at the top of the loop, the previous transition
         // was interrupted (e.g. server restart). Re-enter evaluating to
         // surface the report again.
+        await setState('evaluating');
+        return;
+
+      case 'awaiting-runtime-permission':
+        // Server restarted while waiting for permission — re-enter evaluating.
+        // The evaluator will re-ask for permission if runtimePermissionGranted
+        // is still unset, or skip runtime if it was previously declined.
         await setState('evaluating');
         return;
 

@@ -6,23 +6,37 @@ const GATE_LABELS = {
   'scope-approval': {
     title: 'Approve the project scope',
     body: 'Review the spec the debrief produced in the Spec tab. Approving advances to architecture; rejecting will cancel this run.',
+    approveLabel: 'Approve',
+    rejectLabel: 'Reject',
   },
   'architecture-approval': {
     title: 'Approve the architecture',
     body: 'Review the file tree and interface contract in the Architecture tab. Approving starts code generation; rejecting will cancel this run.',
+    approveLabel: 'Approve',
+    rejectLabel: 'Reject',
   },
   'evaluator-clarification': {
-    title: 'The evaluator wants clarification',
-    body: 'The evaluator failed too many times. Provide a clarification or refine the spec.',
+    title: 'Evaluator needs clarification',
+    body: 'Static checks failed too many times. Review the violations and retry, or reject to cancel.',
+    approveLabel: 'Retry',
+    rejectLabel: 'Cancel run',
+  },
+  'runtime-permission': {
+    title: 'Allow runtime smoke test?',
+    body: 'Static checks passed. DemoKit wants to install dependencies and start the generated server to verify the app boots and responds on all endpoints.',
+    approveLabel: 'Allow & run',
+    rejectLabel: 'Skip (use static result)',
   },
 };
 
-export function GatePanel({ sessionId, gate }) {
+export function GatePanel({ sessionId, gate, gatePayload }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
   const info = GATE_LABELS[gate] || {
     title: `Action required: ${gate}`,
     body: 'The pipeline is paused and waiting for your input.',
+    approveLabel: 'Approve',
+    rejectLabel: 'Reject',
   };
 
   async function handle(action, payload) {
@@ -41,6 +55,8 @@ export function GatePanel({ sessionId, gate }) {
     }
   }
 
+  const commands = gate === 'runtime-permission' ? (gatePayload?.commands || []) : null;
+
   return (
     <div className="rounded-lg border border-amber-700/40 bg-amber-950/30 p-4">
       <div className="flex items-start gap-3">
@@ -48,6 +64,23 @@ export function GatePanel({ sessionId, gate }) {
         <div className="flex-1">
           <h3 className="text-sm font-semibold text-amber-100">{info.title}</h3>
           <p className="mt-1 text-xs text-amber-200/80">{info.body}</p>
+
+          {commands && commands.length > 0 && (
+            <div className="mt-2 rounded-md bg-slate-900/60 border border-slate-700/50 p-2">
+              <p className="text-xs text-slate-400 mb-1 font-medium">Commands that will run:</p>
+              <ul className="space-y-0.5">
+                {commands.map((cmd, i) => (
+                  <li key={i} className="text-xs font-mono text-slate-300 leading-relaxed">
+                    {cmd}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-slate-500">
+                Execution is confined to the generated project folder. No network calls are made by DemoKit itself.
+              </p>
+            </div>
+          )}
+
           <div className="mt-3 flex gap-2">
             <button
               type="button"
@@ -56,7 +89,7 @@ export function GatePanel({ sessionId, gate }) {
               className="rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 px-3 py-1.5 text-xs font-medium text-white inline-flex items-center gap-1.5"
             >
               {busy === 'approve' && <Spinner size={10} />}
-              Approve
+              {info.approveLabel}
             </button>
             <button
               type="button"
@@ -65,7 +98,7 @@ export function GatePanel({ sessionId, gate }) {
               className="rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-50 px-3 py-1.5 text-xs font-medium text-slate-200 inline-flex items-center gap-1.5"
             >
               {busy === 'reject' && <Spinner size={10} />}
-              Reject
+              {info.rejectLabel}
             </button>
           </div>
           {error && (

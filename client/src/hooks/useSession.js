@@ -24,6 +24,7 @@ function initialState() {
     status: 'connecting',
     meta: null,
     pendingGate: null,
+    pendingGatePayload: null,
     terminalStatus: null,
     chat: [],
     liveDebriefText: '',
@@ -47,6 +48,7 @@ function reducer(state, action) {
         ...state,
         meta,
         pendingGate: action.payload?.pendingGate || null,
+        pendingGatePayload: null,
         status: 'connected',
         terminalStatus,
       };
@@ -111,14 +113,18 @@ function reducer(state, action) {
 
     case 'awaiting-input': {
       return appendEvent(
-        { ...state, pendingGate: action.payload?.gate || null },
+        {
+          ...state,
+          pendingGate: action.payload?.gate || null,
+          pendingGatePayload: action.payload || null,
+        },
         action
       );
     }
 
     case 'gate-approved':
     case 'gate-rejected': {
-      return appendEvent({ ...state, pendingGate: null }, action);
+      return appendEvent({ ...state, pendingGate: null, pendingGatePayload: null }, action);
     }
 
     case 'done': {

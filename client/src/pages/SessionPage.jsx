@@ -55,6 +55,7 @@ export function SessionPage() {
   const meta = state.meta;
   const status = meta?.status || 'idle';
   const pending = state.pendingGate;
+  const pendingPayload = state.pendingGatePayload;
   const usage = meta?.usage?.total ?? 0;
 
   // Bump refresh key whenever a major artifact-impacting event arrives
@@ -124,7 +125,7 @@ export function SessionPage() {
           </div>
           {pending && (
             <div className="mt-4">
-              <GatePanel sessionId={id} gate={pending} />
+              <GatePanel sessionId={id} gate={pending} gatePayload={pendingPayload} />
             </div>
           )}
           {state.lastError && (
